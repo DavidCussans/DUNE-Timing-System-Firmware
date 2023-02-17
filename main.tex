@@ -1,0 +1,173 @@
+\documentclass{dune}
+%\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{minted}
+\usepackage{listings}
+\usepackage{pdflscape}
+\usepackage{bytefield}
+\usepackage{biblatex}
+\usepackage{dirtree}
+\addbibresource{bibliography.bib}
+\input{units.tex}
+\input{defs.tex}
+\input{glossary.tex}
+
+\lstset{
+    frameround=fttt,
+    language=VHDL,
+    numbers=left,
+    breaklines=true,
+    keywordstyle=\color{blue}\bfseries, 
+    basicstyle=\ttfamily\color{red},
+    numberstyle=\color{black}
+    }
+
+\lstMakeShortInline[columns=fixed]|
+
+
+%\lstset{
+%    frameround=fttt,
+%    language=VHDL,
+%    numbers=left,
+%    breaklines=true,
+%    keywordstyle=\color{blue}\bfseries, 
+%    basicstyle=\ttfamily\color{red},
+%    numberstyle=\color{black}
+%    }
+
+%\lstMakeShortInline[columns=fixed]|
+
+\title{DUNE Timing System Firmware Description\newline\url{https://edms.cern.ch/document/2395358}}
+\author{J. Brooke, D. Cussans, D. Newbold, S. Trilov}
+\date{v1 -- February 2022}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+
+\section{Summary}
+
+This document describes the structure of the firmware used in the \dword{dts}. It supersedes the document ``DUNE Timing System-Single Phase Firmware''. The protocol used for message transmission (Duty Cycle Shift Keyed data with 8b/10b encoding) is described elsewhere \cite{ref:dts-timing-protocol}.
+
+It is intended to be updated periodically as the specification is finalised and amended.
+
+\section{Overview}
+
+This document describes the structure of the \dword{dts} firmware. There are two main components - the \dword{dts-tm} and \dword{dts-ep}.
+
+\section{Location of DTS Firmware and Software}
+
+At the time of writing, DTS firmware is hosted at \url{https://gitlab.cern.ch/dune-daq/timing/dune-timing-firmware} . Scripts to test and configure the \dword{dts} firmware are hosted at \url{https://gitlab.cern.ch/protoDUNE-SP-DAQ/timing-board-software}
+
+\section{Building Firmware}
+
+The firmware is targeted at Xilinx FPGAs, but has kept the use of proprietary IP cores to a minimum so that endpoint functions can be ported to FPGAs from other manufacturers (e.g. Intel/Altera) if needed.
+
+The firmware is designed to be built with the \dword{ipbb} system and the firmware repository contains the necessary dependency files. The directory structure in the firmware repository follows the usual \dword{ipbb} structure having a |projects| directory containing the top level entity definitions and a |components| directory containing the functional blocks. The directory structure of the timing firmware repository is illustrated in \ref{fig:timingRepoDirectories}.
+
+The firmware for the central part of the timing system is designed to be controlled and monitored using the \dword{ipbus} package.
+
+\begin{figure}[h!]
+%    \centering
+\renewcommand*\DTstylecomment{\color{blue}}
+\renewcommand*\DTstyle{\ttfamily\textcolor{red}}
+\dirtree{%
+.1 timing-board-firmware.
+.2 components\DTcomment{Processing blocks}.
+.3 pdts.
+.4 addr\_table\DTcomment{IPBus address tables}.
+.4 firmware.
+.5 cfg\DTcomment{IPBB dependency files}.
+.5 cgn\DTcomment{IP cores}.
+.5 hdl\DTcomment{firmware for synthesis}.
+.5 sim\_hdl\DTcomment{firmware for simulation}.
+.5 ucf\DTcomment{synthesis constraints}.
+.2 projects\DTcomment{Top level files}.
+.3 master\DTcomment{Top level files for example timing master}.
+.4 addr\_table\DTcomment{IPBus address tables}.
+.4 firmware.
+.5 cfg\DTcomment{IPBB dependency files}.
+.5 cgn\DTcomment{IP cores}.
+.5 hdl\DTcomment{firmware for synthesis}.
+.5 sim\_hdl\DTcomment{firmware for simulation}.
+}
+    \caption{Directory tree for timing firmware repository}
+    \label{fig:timingRepoDirectories}
+\end{figure}
+
+\section{Timing Master}
+
+The timing master firmware produces a serialized data stream encoded in the \dword{dts}   protocol\cite{ref:dts-timing-protocol}. Fixed length (``synchronous'') and variable length (``asynchronous'') messages are encoded and transmitted as a Duty Cycle Shift Keyed (DCSK) data stream with 8b10b encoding to ensure DC-balance. The timing master also receives a serial data stream from the endpoints.
+
+%\subsection{Transmit Path}
+
+Figure \ref{fig:tx_master} shows the arrangement of firmware blocks in a typical timing master firmware design. The |dts_master| block serializes timing messages onto an 8b10b encoded stream at 62.5Mbit/s. At periodic intervals (typically every $2^{26}$ bits) the master block transmits a time synchronization message, which is used by the timing endpoints to synchronize / check their internal timestamp counters. The timestamp counter inside the |dts_master| block can be initialized either by software control, via IPBus, or from an external 64-bit port on the firmware. This 64-bit port is driven either by an IRIG decoder in the case of the GIB or, in the case of the MIB, an endpoint decoding timing data from upstream.
+
+The |dts_mod| block takes the 8b10 encoded data stream at 62.5Mbit/s and with the aid of a 250MHz clock modulates the NRZ data to 25\%/75\% DCSK data.
+
+%\subsection{Receive Path}
+
+A timing master can also receive data returning upstream from the endpoint. The first stage of this is a |dts_upsream_cdr| block that converts the DCSK data into NRZ data that is decoded by the |dts_master| block.
+
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics{dune_timing_system_master_dcsk_drawio.pdf}
+    \caption{Firmware blocks in timing master}
+    \label{fig:tx_master}
+\end{figure}
+
+%\begin{figure}[h!]
+%    \centering
+%    \includegraphics{timing_system_rx_02-crop.pdf}
+%    \caption{Receive physical interface (rx\_phy) and command decoder (rx) blocks in timing master}
+%    \label{fig:rx_rxPhy}
+%\end{figure}
+
+\section{Timing Endpoint Interface}
+
+A timing endpoint uses the same firmware blocks for receiving and transmitting commands as the timing master. The endpoint is designed to receive a continuous stream of timing information from the master. It maintains a local copy of the 64-bit DUNE time-stamp. The first timestamp broadcast message after an endpoint is reset is used to intialize the internal time-stamp. Subsequent time-stamp messages from the master are checked against the internal time-stamp. A mismatch between the internal timestamp and the one transmitted by the timing master causes the endpoint to transition to an error state. 
+
+A timing endpoint can transmit messages back to the timing master. This ability is used to measure the round-trip delay and monitor the status of the endpoint. However an endpoint does not transmit data until configured to do so by the timing master. The ``normally off'' behaviour of endpoints allows passive optical splitting/combining to be used. 
+
+A timing endpoint is characterised by the following properties:
+
+\begin{itemize}
+	\item A single system clock phase, adjustable under timing system control
+	\item A unique address
+	\item A mapping, in the command decoder, between the timing system commands and the endpoint actions.
+\end{itemize}
+
+A conceptual diagram of an endpoint is shown in Figure~\ref{fig:endpoint_block}. It consists of two major components components that are always present and one optional component outside the FPGA:
+
+\begin{itemize}
+	\item A PLL based clock generator. Normally this is a PLL inside the a clock management unit inside the FPGA decoding the timing data. The PLL recovers 62.5MHz and 250MHz clocks from the incoming data stream. For applications which require a lower jitter clock than can be achieved with the FPGA PLL the FPGA PLL can be supplemented, or replaced by, an external PLL.
+	\item A firmware protocol decoder, implemented inside the FPGA as part of the overall system firmware. This block receives and interprets the timing data stream, and provides decoded commands to other blocks inside the FPGA. It also monitors and counts errors observed in the data stream.
+	\item(optional) For applications requiring low jitter and high precision phase alignment ( $< 1{\mathrm ns}$) a high speed D-type flip-flop can be used to re-time the outgoing data stream onto the 250MHz clock.
+\end{itemize}
+
+Error conditions monitored by the decoder include:
+
+\begin{itemize}
+	\item 8b/10b decoder errors
+	\item Packet checksum errors
+	\item Timestamp counter-out-of-sync error
+	\item PLL lock timeout
+\end{itemize}
+
+More details about the firmware interface to the endpoint are given elsewhere\cite{ref:dts-endpoint-interface}
+
+\begin{figure}[p]
+	\centering
+	\includegraphics[width=0.9\textwidth]{dune_timing_endpoint_block_dcsk_drawio.pdf}
+	\caption{Endpoint signal paths. Signals in red are data and clock. Signals in black are control and monitoring}
+	\label{fig:endpoint_block}
+\end{figure}
+
+\clearpage
+\printglossary
+\printbibliography
+
+\end{document}
+ 
